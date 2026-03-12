@@ -26,10 +26,10 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
 
-# Install Playwright Chromium browser + its dependencies
-RUN npx playwright install --with-deps chromium
+# Cache bust to force fresh Playwright install
+ARG CACHEBUST=1
+RUN npm install && npx playwright install --with-deps chromium
 
 COPY . .
 

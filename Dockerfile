@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
     libpango-1.0-0 libcairo2 libasound2 libxshmfence1 libx11-xcb1 \
     fonts-liberation libgl1 libegl1 libgles2 \
+    python3 make g++ \
     && rm -rf /var/lib/apt/lists/* \
     && npm install \
     && npx playwright install --with-deps chromium

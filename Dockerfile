@@ -33,6 +33,9 @@ RUN npx playwright install chromium
 
 COPY . .
 
+# Ensure data directory exists for SQLite
+RUN mkdir -p /app/data
+
 EXPOSE 3000
 
 CMD ["node", "server.js"]

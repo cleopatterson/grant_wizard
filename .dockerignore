@@ -1,6 +1,7 @@
 node_modules
-grants.db
-grants.db-wal
-grants.db-shm
+data/*.db
+data/*.db-wal
+data/*.db-shm
+grants.db*
 .env
 .git

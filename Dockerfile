@@ -28,8 +28,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Install Playwright Chromium browser
-RUN npx playwright install chromium
+# Install Playwright Chromium browser + its dependencies
+RUN npx playwright install --with-deps chromium
 
 COPY . .
 

@@ -1,8 +1,13 @@
 const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 const SEED_GRANTS = require('./data/seed-grants');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'grants.db');
+const DB_DIR = path.join(__dirname, '..', 'data');
+const DB_PATH = path.join(DB_DIR, 'grants.db');
+
+// Ensure data directory exists
+if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
 let db;
 

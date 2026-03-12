@@ -1,0 +1,1521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wilko's Grant Wizard</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;1,300;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+:root {
+  --ink: #141211;
+  --bg: #f4f1ec;
+  --surface: #eae6df;
+  --border: #ddd8cf;
+  --charcoal: #3a3632;
+  --muted: #8a827a;
+  --accent: #b08d5b;
+  --green: #6ca264;
+  --orange: #cc8833;
+  --blue: #5882b4;
+  --display: 'Newsreader', Georgia, serif;
+  --body: 'IBM Plex Sans', sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--body); background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+input:focus, textarea:focus { border-color: var(--accent) !important; outline: none; }
+
+/* ─── Mobile responsive overrides ─── */
+@media (max-width: 600px) {
+  /* Main content container */
+  .mw-main { max-width: 100% !important; padding-left: 14px !important; padding-right: 14px !important; }
+
+  /* Header */
+  .mw-header { padding: 12px 14px !important; }
+  .mw-header-title { font-size: 15px !important; }
+
+  /* Step indicator */
+  .mw-steps { padding: 8px 10px !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .mw-steps > div { font-size: 9px !important; letter-spacing: 0.04em !important; padding: 6px 2px !important; min-width: 0; white-space: nowrap; }
+
+  /* Section headings */
+  .mw-heading { font-size: 24px !important; }
+
+  /* Connect step form container */
+  .mw-form-narrow { max-width: 100% !important; }
+
+  /* Scanning step container */
+  .mw-scan-list { max-width: 100% !important; }
+
+  /* Complete step stats box */
+  .mw-stats-box { max-width: 100% !important; }
+  .mw-stats-text { max-width: 100% !important; }
+
+  /* Custom URL input row — stack on mobile */
+  .mw-url-row { flex-direction: column !important; }
+  .mw-url-row button { width: 100% !important; }
+
+  /* Review field action buttons — wrap */
+  .mw-field-actions { flex-wrap: wrap !important; }
+  .mw-field-actions button { flex: 1 1 auto !important; min-width: 0 !important; }
+
+  /* Review header badges */
+  .mw-review-header { flex-direction: column !important; align-items: flex-start !important; }
+
+  /* Complete step buttons */
+  .mw-complete-buttons { flex-direction: column !important; }
+  .mw-complete-buttons button { width: 100% !important; }
+
+  /* Field card label row — stack on very small */
+  .mw-field-label-row { flex-direction: column !important; align-items: flex-start !important; gap: 6px !important; }
+
+  /* Grant list item layout */
+  .mw-grant-item { padding: 14px 16px !important; }
+
+  /* Help modal */
+  .mw-help-modal { padding: 20px !important; width: 95% !important; }
+  .mw-help-modal-actions { flex-direction: column !important; }
+  .mw-help-modal-actions button { flex: none !important; width: 100% !important; }
+
+  /* Grant detail info cards */
+  .mw-detail-cards { grid-template-columns: 1fr 1fr !important; }
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── API helpers ───
+async function api(path, opts = {}) {
+  const res = await fetch('/api' + path, {
+    headers: { 'Content-Type': 'application/json', ...opts.headers },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  return res.json();
+}
+
+async function apiSSE(path, body, onMessage) {
+  const res = await fetch('/api' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  function flush() {
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(line.slice(6));
+          console.log('SSE event:', parsed.type, parsed);
+          onMessage(parsed);
+        } catch (e) {
+          console.warn('SSE parse error:', e, line);
+        }
+      }
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    flush();
+  }
+
+  // Process any remaining data in buffer after stream ends
+  buffer += '\n'; // ensure last line gets processed
+  flush();
+}
+
+// ─── Small UI components ───
+const smallBtn = {
+  padding: '5px 14px', borderRadius: 5, border: '1px solid var(--border)',
+  background: 'white', color: 'var(--charcoal)', fontSize: 12, cursor: 'pointer',
+  fontFamily: 'var(--body)', fontWeight: 500, transition: 'all 0.2s',
+};
+
+function StatusBadge({ status }) {
+  const map = {
+    auto: { color: 'var(--green)', label: '✓ AUTO' },
+    needs_input: { color: 'var(--orange)', label: '⚠ NEEDS INPUT' },
+    template: { color: 'var(--blue)', label: '◐ TEMPLATE' },
+    ready: { color: 'var(--green)', label: '✓ READY' },
+    skip: { color: 'var(--muted)', label: '— SKIP' },
+  };
+  const s = map[status] || map.needs_input;
+  return <span style={{ color: s.color, fontSize: 13, fontWeight: 600 }}>{s.label}</span>;
+}
+
+// ─── Screen 1: Select Grant ───
+function GrantSelect({ onSelect }) {
+  const [grants, setGrants] = useState([]);
+  const [hovered, setHovered] = useState(null);
+  const [customUrl, setCustomUrl] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api('/grants').then(data => { setGrants(data); setLoading(false); });
+  }, []);
+
+  const portalLabel = (type) => {
+    const labels = { smartygrants: 'SmartyGrants', fluxx: 'Creative Australia (Fluxx)', creative_australia: 'Creative Australia', apra_amcos: 'APRA AMCOS', aaa: 'American Australian Assoc.', austrade: 'Austrade', create_nsw: 'Create NSW', regional_arts: 'Regional Arts' };
+    return labels[type] || type || 'Portal';
+  };
+
+  const handleSelect = (g) => {
+    onSelect({
+      id: g.id, name: g.name, body: g.body, amount: g.amount,
+      portal: portalLabel(g.portal_type), portalType: g.portal_type, url: g.url,
+      description: g.description, eligibility: g.eligibility,
+      loginUrl: g.login_url || g.loginUrl || null,
+      applicationUrl: g.application_url || g.applicationUrl || null,
+    });
+  };
+
+  return (
+    <div style={{ animation: 'fadeIn 0.5s ease' }}>
+      <div style={{ marginBottom: 32 }}>
+        <h2 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 28, fontWeight: 300, margin: 0, color: 'var(--ink)' }}>
+          Which grant are you applying for?
+        </h2>
+        <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 6, fontWeight: 300 }}>
+          Select from your tracked grants or paste any application URL
+        </p>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>Loading grants...</div>
+      ) : (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 24 }}>
+          {grants.map(g => (
+            <div key={g.id} className="mw-grant-item" onClick={() => handleSelect(g)}
+              onMouseEnter={() => setHovered(g.id)} onMouseLeave={() => setHovered(null)}
+              style={{
+                padding: '18px 22px', borderRadius: 10, cursor: 'pointer',
+                background: hovered === g.id ? 'var(--ink)' : 'white',
+                color: hovered === g.id ? 'white' : 'var(--ink)',
+                border: '1px solid', borderColor: hovered === g.id ? 'var(--ink)' : 'var(--border)',
+                transition: 'all 0.25s ease', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}>
+              <div style={{ flex: 1 }}>
+                <div style={{
+                  fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase',
+                  color: hovered === g.id ? 'rgba(255,255,255,0.5)' : 'var(--accent)',
+                  marginBottom: 4, transition: 'color 0.25s',
+                }}>{portalLabel(g.portal_type)}</div>
+                <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 3 }}>{g.name}</div>
+                <div style={{ fontSize: 12, opacity: 0.5, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <span>{g.amount}</span>
+                  {g.status && <><span>·</span><span>{g.status.substring(0, 40)}</span></>}
+                </div>
+                {g.url && (
+                  <a href={g.url} target="_blank" rel="noopener noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                      fontSize: 11, color: hovered === g.id ? 'rgba(255,255,255,0.6)' : 'var(--accent)',
+                      textDecoration: 'none', marginTop: 4, display: 'inline-block',
+                    }}
+                    onMouseEnter={e => e.target.style.textDecoration = 'underline'}
+                    onMouseLeave={e => e.target.style.textDecoration = 'none'}
+                  >
+                    View grant details →
+                  </a>
+                )}
+              </div>
+              <div style={{ fontSize: 18, opacity: hovered === g.id ? 1 : 0.2, transition: 'opacity 0.2s' }}>→</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ padding: 20, background: 'var(--surface)', borderRadius: 10, border: '1px solid var(--border)' }}>
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 8 }}>
+          Or paste a grant application URL
+        </div>
+        <div className="mw-url-row" style={{ display: 'flex', gap: 8 }}>
+          <input value={customUrl} onChange={e => setCustomUrl(e.target.value)}
+            placeholder="https://artsnsw.smartygrants.com.au/..."
+            style={{
+              flex: 1, padding: '10px 14px', borderRadius: 6, border: '1px solid var(--border)',
+              fontSize: 14, fontFamily: 'var(--body)', outline: 'none', color: 'var(--ink)',
+            }} />
+          <button onClick={() => customUrl && onSelect({
+            id: 99, name: 'Custom Grant', portal: 'Unknown', url: customUrl, amount: '—',
+          })} style={{
+            padding: '10px 20px', borderRadius: 6, border: 'none', background: 'var(--ink)',
+            color: 'white', fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: 'var(--body)',
+          }}>Go</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Screen 2: Grant Detail ───
+function GrantDetail({ grant, onBack, onStartApplication }) {
+  const [showLogin, setShowLogin] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [connecting, setConnecting] = useState(false);
+
+  const isFluxx = ['fluxx', 'creative_australia'].includes(grant.portalType);
+
+  const handleStart = async () => {
+    setConnecting(true);
+    const portalType = grant.portalType || grant.portal_type || 'smartygrants';
+    const creds = await api(`/wizard/credentials?portal=${portalType}`);
+    if (creds.hasCredentials) {
+      onStartApplication({ email: creds.email, password: creds.password });
+    } else {
+      setConnecting(false);
+      setShowLogin(true);
+    }
+  };
+
+  const handleLoginSubmit = () => {
+    setConnecting(true);
+    onStartApplication({ email, password });
+  };
+
+  return (
+    <div style={{ animation: 'fadeIn 0.5s ease' }}>
+      {/* Back button */}
+      <button onClick={onBack} style={{
+        background: 'none', border: 'none', color: 'var(--muted)', fontSize: 14,
+        cursor: 'pointer', fontFamily: 'var(--body)', padding: '0 0 20px', display: 'flex',
+        alignItems: 'center', gap: 6, fontWeight: 500,
+      }}
+      onMouseEnter={e => e.currentTarget.style.color = 'var(--ink)'}
+      onMouseLeave={e => e.currentTarget.style.color = 'var(--muted)'}>
+        ← Back to grants
+      </button>
+
+      {/* Grant header */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 8 }}>
+          {grant.portal || 'Grant Portal'}
+        </div>
+        <h1 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 32, fontWeight: 300, margin: '0 0 8px', lineHeight: 1.3 }}>
+          {grant.name}
+        </h1>
+        {grant.body && (
+          <div style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 300 }}>{grant.body}</div>
+        )}
+      </div>
+
+      {/* Grant info cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 28 }}>
+        {grant.amount && (
+          <div style={{ padding: '16px 18px', background: 'white', borderRadius: 10, border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 4 }}>Amount</div>
+            <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--ink)' }}>{grant.amount}</div>
+          </div>
+        )}
+        {grant.portal && (
+          <div style={{ padding: '16px 18px', background: 'white', borderRadius: 10, border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 4 }}>Portal</div>
+            <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--ink)' }}>{grant.portal}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Description */}
+      {grant.description && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8 }}>Description</div>
+          <div style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--charcoal)' }}>{grant.description}</div>
+        </div>
+      )}
+
+      {/* Eligibility */}
+      {grant.eligibility && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8 }}>Eligibility</div>
+          <div style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--charcoal)' }}>{grant.eligibility}</div>
+        </div>
+      )}
+
+      {/* External link */}
+      {grant.url && (
+        <a href={grant.url} target="_blank" rel="noopener noreferrer"
+          style={{ display: 'inline-block', fontSize: 13, color: 'var(--accent)', textDecoration: 'none', marginBottom: 28 }}
+          onMouseEnter={e => e.target.style.textDecoration = 'underline'}
+          onMouseLeave={e => e.target.style.textDecoration = 'none'}>
+          View full grant details on portal →
+        </a>
+      )}
+
+      {/* Inline login fields (shown when no saved creds) */}
+      {showLogin && (
+        <div style={{ marginBottom: 20, padding: 20, background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)', animation: 'fadeIn 0.3s ease' }}>
+          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)', marginBottom: 14 }}>
+            Enter your {grant.portal || 'portal'} credentials to connect
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 4 }}>
+                {isFluxx ? 'Username' : 'Email'}
+              </label>
+              <input value={email} onChange={e => setEmail(e.target.value)}
+                placeholder={isFluxx ? 'your_username' : 'your@email.com'}
+                style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14, fontFamily: 'var(--body)' }} />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 4 }}>Password</label>
+              <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="••••••••"
+                onKeyDown={e => e.key === 'Enter' && email && password && handleLoginSubmit()}
+                style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14, fontFamily: 'var(--body)' }} />
+            </div>
+          </div>
+          <button onClick={handleLoginSubmit} disabled={!email || !password || connecting}
+            style={{
+              width: '100%', padding: 14, borderRadius: 8, border: 'none',
+              background: email && password ? 'var(--ink)' : 'var(--border)',
+              color: 'white', fontSize: 14, fontWeight: 500, cursor: email && password ? 'pointer' : 'default',
+              fontFamily: 'var(--body)', marginTop: 14, transition: 'background 0.2s',
+            }}>
+            {connecting ? 'Connecting...' : 'Connect & Start'}
+          </button>
+        </div>
+      )}
+
+      {/* Start Application CTA */}
+      {!showLogin && (
+        <button onClick={handleStart} disabled={connecting}
+          style={{
+            width: '100%', padding: 16, borderRadius: 10, border: 'none',
+            background: 'var(--ink)', color: 'white', fontSize: 15, fontWeight: 500,
+            cursor: connecting ? 'default' : 'pointer', fontFamily: 'var(--body)',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.12)', transition: 'all 0.2s',
+            opacity: connecting ? 0.7 : 1,
+          }}>
+          {connecting ? 'Connecting...' : 'Start Application →'}
+        </button>
+      )}
+
+      {/* Privacy note */}
+      <div style={{ marginTop: 16, padding: 14, background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+          <span style={{ fontSize: 14 }}>🔒</span>
+          <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
+            The agent uses a real browser to log in and fill the form. Credentials are stored locally on your machine.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Screen 3: Scanning ───
+function ScanningStep({ grant, scanEvents }) {
+  const scanSteps = [
+    'Opening browser', 'Logging in', 'Navigating to form',
+    'Reading fields', 'Classifying questions', 'Matching profile', 'Preparing wizard',
+  ];
+  const completedCount = scanEvents.filter(e => e.type === 'scan_step_done').length;
+  const currentLabel = completedCount < scanSteps.length ? scanSteps[completedCount] : 'Done';
+  const scanComplete = scanEvents.find(e => e.type === 'scan_complete');
+
+  return (
+    <div style={{ animation: 'fadeIn 0.5s ease', textAlign: 'center', paddingTop: 60 }}>
+      <div style={{
+        fontSize: 48, marginBottom: 24, display: 'inline-block',
+        animation: scanComplete ? 'none' : 'spin 2s linear infinite',
+        color: scanComplete ? 'var(--green)' : 'var(--accent)',
+      }}>
+        ✦
+      </div>
+      <h2 style={{ fontFamily: 'var(--display)', fontSize: 24, fontWeight: 300, margin: '0 0 8px', color: 'var(--ink)' }}>
+        {scanComplete ? 'Ready to go' : currentLabel + '...'}
+      </h2>
+      <p style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 300, margin: 0 }}>
+        {scanComplete
+          ? `Found ${scanComplete.totalFields} questions`
+          : `Step ${completedCount + 1} of ${scanSteps.length}`}
+      </p>
+    </div>
+  );
+}
+
+// ─── Screen 4: Conversational Wizard ───
+
+function ReviewStep({ grant, fields, onUpdateField, onGenerateField, onHelpGenerate, onFill }) {
+  const [qIndex, setQIndex] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [bgGenerating, setBgGenerating] = useState(true);
+  const [helpMode, setHelpMode] = useState(false);
+  const [helpStep, setHelpStep] = useState(0);
+  const [helpAnswers, setHelpAnswers] = useState({});
+  const [inputValue, setInputValue] = useState('');
+
+  // Kick off background generation on mount
+  useEffect(() => {
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const resp = await fetch('/api/wizard/generate-all', { method: 'POST', signal: ctrl.signal });
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'field_done' && data.content) {
+              onUpdateField(data.fieldId, data.content);
+            } else if (data.type === 'all_done') {
+              setBgGenerating(false);
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') setBgGenerating(false);
+      }
+    })();
+    return () => ctrl.abort();
+  }, []);
+
+  // Build question sequence — skip auto-filled profile fields and skipped fields
+  const questions = fields
+    .map((field, i) => {
+      const l = (field.label || '').toLowerCase();
+      const isLong = field.type === 'textarea' || (field.wordLimit && field.wordLimit > 50) ||
+        l.match(/tell us|describe|outline|detail|explain|activity title/);
+      const isChoice = (field.options && field.options.length > 0) ||
+        field.type === 'radio' || field.type === 'checkbox' || field.type === 'select';
+      return { ...field, index: i, isLong, isChoice };
+    })
+    .filter(f => {
+      // Skip explicitly skipped fields
+      if (f.status === 'skip') return false;
+      // Only silently fill simple profile-lookup fields (name, email, phone, address, etc.)
+      // Keep everything else: generated content (for review), choices, declarations
+      if (f.status === 'auto' && f.value && (f.preFillStrategy === 'profile_match' || f.preFillStrategy === 'profile_lookup')) {
+        const ct = (f.classifiedType || '').toLowerCase();
+        const simpleProfileFields = ['name', 'email', 'phone', 'address', 'abn', 'website', 'residencyconfirmation'];
+        if (simpleProfileFields.includes(ct)) return false;
+      }
+      return true;
+    });
+
+  const totalQ = questions.length;
+  const current = questions[qIndex];
+  const answered = fields.filter(f => f.value || f.status === 'auto').length;
+  const progress = totalQ > 0 ? ((qIndex) / totalQ) * 100 : 0;
+
+  // Auto-advance past already-answered fields
+  const goNext = () => {
+    let next = qIndex + 1;
+    setEditing(false);
+    setHelpMode(false);
+    setHelpStep(0);
+    setHelpAnswers({});
+    setInputValue('');
+    if (next >= totalQ) { setQIndex(totalQ); return; }
+    setQIndex(next);
+  };
+
+  const goPrev = () => {
+    if (qIndex > 0) {
+      setEditing(false);
+      setHelpMode(false);
+      setQIndex(qIndex - 1);
+    }
+  };
+
+  const selectAnswer = (fieldId, value) => {
+    onUpdateField(fieldId, value);
+    setTimeout(goNext, 300);
+  };
+
+  const submitInput = () => {
+    if (inputValue.trim()) {
+      onUpdateField(current.id, inputValue.trim());
+      setTimeout(goNext, 200);
+    }
+  };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    await onGenerateField(current.id);
+    setGenerating(false);
+  };
+
+  const handleHelpGenerate = async () => {
+    const qs = getHelpQs(current);
+    const answers = qs.map((q, i) => ({ question: q.q, answer: helpAnswers[i] || '' })).filter(a => a.answer);
+    setGenerating(true);
+    await onHelpGenerate(current.id, answers);
+    setHelpMode(false);
+    setHelpStep(0);
+    setHelpAnswers({});
+    setGenerating(false);
+  };
+
+  const saveEdit = () => {
+    onUpdateField(current.id, editValue);
+    setEditing(false);
+  };
+
+  // Help questions per field type
+  const getHelpQs = (field) => {
+    const l = (field.label || '').toLowerCase();
+    if (l.includes('export activity') || l.includes('proposed') || l.includes('describe'))
+      return [
+        { q: 'Where are you touring / what are you doing?', placeholder: 'e.g., 8 shows across London, Paris, Berlin' },
+        { q: 'When is this happening?', placeholder: 'e.g., September 2026, 3 weeks' },
+        { q: "What's the main goal?", placeholder: 'e.g., Support album in European markets' },
+        { q: 'Any confirmed partners or venues?', placeholder: 'e.g., Nettwerk, The Lexington London' },
+      ];
+    if (l.includes('experience') || l.includes('previous') || l.includes('international'))
+      return [
+        { q: 'Key international tours?', placeholder: 'e.g., US tours 2019-2023, SXSW' },
+        { q: 'Countries performed in?', placeholder: 'e.g., USA, UK, Germany' },
+        { q: 'Notable achievements abroad?', placeholder: 'e.g., Signed to Nettwerk' },
+      ];
+    if (l.includes('team'))
+      return [
+        { q: 'Who manages you?', placeholder: 'e.g., Nettwerk Music Group' },
+        { q: 'Key collaborators?', placeholder: 'e.g., Label, booking agent, co-writers' },
+        { q: 'Tour support?', placeholder: 'e.g., Sound engineer, tour manager' },
+      ];
+    return [
+      { q: "What's the key point here?", placeholder: 'Main thing to say...' },
+      { q: 'Any specific details?', placeholder: 'Names, dates, numbers...' },
+    ];
+  };
+
+  // Suggest button options for dropdowns / radios — use real options when available
+  const getSuggestions = (field) => {
+    const l = (field.label || '').toLowerCase();
+
+    // If field has real options from the form, use those
+    if (field.options && field.options.length > 0) {
+      // Try to pick a recommended option based on Mark's profile
+      const opts = field.options.map(opt => {
+        const ol = opt.toLowerCase();
+        let recommended = false;
+        if (ol.includes('individual') || ol.includes('music') || ol.includes('touring') ||
+            ol.includes('yes') || ol === 'no' && l.includes('children') ||
+            ol.includes('another country') || ol.includes('performance fee')) {
+          recommended = true;
+        }
+        return { label: opt, recommended };
+      });
+      // If nothing got recommended, recommend the first real option
+      if (!opts.some(o => o.recommended) && opts.length > 0) opts[0].recommended = true;
+      return opts;
+    }
+
+    // Fallback hardcoded suggestions for fields without extracted options
+    if (l.includes('applying as')) return [{ label: 'Individual', recommended: true }, { label: 'Organisation' }];
+    if (l.includes('language')) return [{ label: 'No', recommended: true }, { label: 'Yes' }];
+    if (l.includes('children')) return [{ label: 'No', recommended: true }, { label: 'Yes' }];
+    if (l.includes('creative control')) return [{ label: 'Yes', recommended: true }, { label: 'No' }];
+    if (l.includes('main location')) return [{ label: 'Another country', recommended: true }, { label: 'Australia' }];
+    if (l.includes('area of practice')) return [{ label: 'Music', recommended: true }, { label: 'Multi-arts' }, { label: 'Other' }];
+    if (l.includes('purpose')) return [{ label: 'Touring', recommended: true }, { label: 'Market development' }, { label: 'Professional development' }];
+    if (l.includes('find out about')) return [{ label: 'Website' }, { label: 'Word of mouth' }, { label: 'Social media' }, { label: 'Newsletter' }];
+    if (l.includes('remuner') || l.includes('how will artists')) return [{ label: 'Performance fees', recommended: true }, { label: 'Salary/wages' }, { label: 'Other' }];
+    if (field.type === 'radio') return [{ label: 'Yes', recommended: true }, { label: 'No' }];
+    if (field.type === 'checkbox') return [{ label: 'Yes', recommended: field.status === 'auto' }, { label: 'Skip' }];
+    return null;
+  };
+
+  // ─── Done screen ───
+  if (qIndex >= totalQ) {
+    return (
+      <div style={{ animation: 'fadeIn 0.4s ease' }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>✓</div>
+          <h2 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 28, fontWeight: 300, margin: '0 0 8px' }}>
+            All {totalQ} questions reviewed
+          </h2>
+          <p style={{ color: 'var(--muted)', fontSize: 14, fontWeight: 300 }}>
+            {answered} answered — ready to fill the form
+          </p>
+        </div>
+
+        {/* Summary */}
+        <div style={{ marginBottom: 24 }}>
+          {fields.map((f, i) => (
+            <div key={f.id} onClick={() => { setQIndex(i); setEditing(false); setHelpMode(false); }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+                borderBottom: '1px solid var(--border)', cursor: 'pointer',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <div style={{
+                width: 22, height: 22, borderRadius: 12, fontSize: 11, fontWeight: 600,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                background: f.value ? 'var(--green)' : 'var(--border)', color: f.value ? 'white' : 'var(--muted)',
+              }}>{f.value ? '✓' : i + 1}</div>
+              <div style={{ flex: 1, fontSize: 13, color: 'var(--ink)' }}>{f.label}</div>
+              <div style={{ fontSize: 12, color: f.value ? 'var(--green)' : 'var(--orange)', fontWeight: 500, maxWidth: 200, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {f.value ? (f.value.length > 30 ? f.value.substring(0, 30) + '...' : f.value) : 'needs input'}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={onFill} style={{
+          width: '100%', padding: 16, borderRadius: 10, border: 'none',
+          background: 'var(--ink)', color: 'white', fontSize: 15, fontWeight: 500,
+          cursor: 'pointer', fontFamily: 'var(--body)', boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+        }}>
+          Fill Form in {grant.portal || 'Portal'} →
+        </button>
+      </div>
+    );
+  }
+
+  // ─── Question screen ───
+  const suggestions = getSuggestions(current);
+  const helpQs = getHelpQs(current);
+
+  return (
+    <div style={{ animation: 'fadeIn 0.35s ease' }} key={qIndex}>
+      {/* Question number */}
+      <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 8 }}>
+        Question {qIndex + 1} of {totalQ}
+      </div>
+
+      {/* Question text */}
+      <h2 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 22, fontWeight: 400, margin: '0 0 8px', lineHeight: 1.4 }}>
+        {current.label}
+      </h2>
+
+      {current.wordLimit && (
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>Word limit: {current.wordLimit}</div>
+      )}
+
+      {/* Already answered — choice fields show buttons, text fields show edit/regenerate/looks good */}
+      {current.value && !editing && current.isChoice && suggestions && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {suggestions.map((s, i) => (
+              <div key={i} onClick={() => selectAnswer(current.id, s.label)}
+                style={{
+                  padding: '14px 20px', borderRadius: 10, cursor: 'pointer',
+                  border: '1px solid var(--border)', fontSize: 16, fontWeight: 500, fontFamily: 'var(--body)',
+                  background: 'white', color: 'var(--ink)',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  transition: 'all 0.25s ease',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--ink)'; e.currentTarget.style.color = 'white'; e.currentTarget.style.borderColor = 'var(--ink)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.color = 'var(--ink)'; e.currentTarget.style.borderColor = 'var(--border)'; }}>
+                <span>{s.label}</span>
+                <span style={{ fontSize: 18, opacity: 0.2, transition: 'opacity 0.2s' }} className="mw-arrow">→</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {current.value && !editing && !current.isChoice && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{
+            background: 'rgba(108,162,100,0.06)', border: '1px solid rgba(108,162,100,0.2)',
+            borderRadius: 10, padding: '16px 18px', marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--green)', marginBottom: 6 }}>
+              {current.preFillStrategy === 'profile_lookup' ? 'From your profile' : 'AI draft'}
+            </div>
+            <div style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>
+              {current.value}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button onClick={() => { setEditing(true); setEditValue(current.value); }}
+              title="Edit"
+              style={{ width: 44, height: 44, borderRadius: 10, border: '2px solid var(--border)', background: 'white',
+                color: 'var(--ink)', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'border-color 0.2s' }}>
+              ✎
+            </button>
+            <button onClick={handleGenerate} disabled={generating}
+              title="Regenerate"
+              style={{ width: 44, height: 44, borderRadius: 10, border: '2px solid var(--border)', background: 'white',
+                color: 'var(--ink)', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'border-color 0.2s' }}>
+              {generating ? '…' : '↻'}
+            </button>
+            <button onClick={goNext} style={{
+              flex: 1, padding: '12px 28px', borderRadius: 10, border: 'none', background: 'var(--green)',
+              color: 'white', fontSize: 15, fontWeight: 500, cursor: 'pointer', fontFamily: 'var(--body)',
+            }}>
+              Looks good ✓
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Editing mode */}
+      {editing && (
+        <div style={{ marginTop: 20 }}>
+          <textarea value={editValue} onChange={e => setEditValue(e.target.value)} autoFocus
+            style={{
+              width: '100%', padding: '14px 16px', borderRadius: 10, border: '2px solid var(--accent)',
+              fontSize: 15, fontFamily: 'var(--body)', minHeight: current.isLong ? 150 : 60,
+              resize: 'vertical', lineHeight: 1.7,
+            }} />
+          {current.wordLimit && (
+            <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'right', marginTop: 4 }}>
+              {editValue.split(/\s+/).filter(Boolean).length}/{current.wordLimit}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button onClick={saveEdit} style={{
+              padding: '12px 24px', borderRadius: 10, border: 'none', background: 'var(--ink)',
+              color: 'white', fontSize: 14, fontWeight: 500, cursor: 'pointer', fontFamily: 'var(--body)', flex: 1,
+            }}>Save & Continue</button>
+            <button onClick={() => setEditing(false)}
+              style={{ padding: '12px 20px', borderRadius: 10, border: '2px solid var(--border)',
+                background: 'white', fontSize: 14, cursor: 'pointer', fontFamily: 'var(--body)' }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Empty — needs answer */}
+      {!current.value && !editing && !helpMode && (
+        <div style={{ marginTop: 20 }}>
+          {/* Suggestion buttons */}
+          {suggestions && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+              {suggestions.map((s, i) => (
+                <div key={i} onClick={() => selectAnswer(current.id, s.label)}
+                  style={{
+                    padding: '14px 20px', borderRadius: 10, cursor: 'pointer',
+                    border: '1px solid var(--border)', fontSize: 16, fontWeight: 500, fontFamily: 'var(--body)',
+                    background: 'white', color: 'var(--ink)',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    transition: 'all 0.25s ease',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--ink)'; e.currentTarget.style.color = 'white'; e.currentTarget.style.borderColor = 'var(--ink)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.color = 'var(--ink)'; e.currentTarget.style.borderColor = 'var(--border)'; }}>
+                  <span>{s.label}</span>
+                  <span style={{ fontSize: 18, opacity: 0.2, transition: 'opacity 0.2s' }} className="mw-arrow">→</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* For long text: show generating state or generate/write buttons */}
+          {current.isLong && (
+            <div style={{ marginBottom: 16 }}>
+              {bgGenerating ? (
+                <div style={{
+                  padding: '16px 20px', borderRadius: 10, border: '2px solid var(--border)',
+                  background: 'rgba(193,155,100,0.05)', textAlign: 'center',
+                }}>
+                  <div style={{ fontSize: 14, color: 'var(--accent)', animation: 'pulse 1.5s infinite' }}>
+                    ✦ Writing a draft for this...
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>Skip ahead or wait a moment</div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={handleGenerate} disabled={generating}
+                    style={{
+                      flex: 1, padding: '14px 20px', borderRadius: 10, border: '2px solid var(--green)',
+                      background: 'rgba(108,162,100,0.05)', color: 'var(--ink)', fontSize: 15,
+                      fontWeight: 500, cursor: 'pointer', fontFamily: 'var(--body)',
+                    }}>
+                    {generating ? 'Writing...' : '✦ Generate'}
+                  </button>
+                  <button onClick={() => { setEditing(true); setEditValue(''); }}
+                    style={{
+                      padding: '14px 20px', borderRadius: 10, border: '2px solid var(--border)',
+                      background: 'white', color: 'var(--ink)', fontSize: 15,
+                      cursor: 'pointer', fontFamily: 'var(--body)',
+                    }}>
+                    ✍ Write myself
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Text input for simple fields without suggestions */}
+          {!current.isLong && !suggestions && (
+            <div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input value={inputValue} onChange={e => setInputValue(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && submitInput()}
+                  placeholder="Type your answer..."
+                  autoFocus
+                  style={{
+                    flex: 1, padding: '14px 16px', borderRadius: 10, border: '2px solid var(--border)',
+                    fontSize: 16, fontFamily: 'var(--body)', transition: 'border-color 0.2s',
+                  }} />
+                <button onClick={submitInput} disabled={!inputValue.trim()}
+                  style={{
+                    width: 54, height: 54, borderRadius: 10, border: 'none',
+                    background: inputValue.trim() ? 'var(--ink)' : 'var(--border)',
+                    color: 'white', fontSize: 18, cursor: inputValue.trim() ? 'pointer' : 'default',
+                    transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>→</button>
+              </div>
+              <button onClick={() => { selectAnswer(current.id, 'N/A'); }}
+                style={{ marginTop: 10, background: 'none', border: 'none', color: 'var(--muted)',
+                  fontSize: 13, cursor: 'pointer', fontFamily: 'var(--body)', padding: '4px 0' }}>
+                Skip this question
+              </button>
+            </div>
+          )}
+
+        </div>
+      )}
+
+      {/* Help mode — guided questions */}
+      {helpMode && !editing && (
+        <div style={{ marginTop: 20 }}>
+          {helpQs.map((hq, i) => (
+            <div key={i} style={{
+              marginBottom: 16, opacity: helpStep >= i ? 1 : 0.15,
+              transition: 'opacity 0.4s ease', pointerEvents: helpStep >= i ? 'auto' : 'none',
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--ink)', marginBottom: 6 }}>{hq.q}</div>
+              <input value={helpAnswers[i] || ''} onChange={e => {
+                setHelpAnswers({ ...helpAnswers, [i]: e.target.value });
+                if (e.target.value.length > 2 && helpStep === i) setHelpStep(i + 1);
+              }} placeholder={hq.placeholder}
+                style={{
+                  width: '100%', padding: '12px 14px', borderRadius: 10, border: '2px solid var(--border)',
+                  fontSize: 15, fontFamily: 'var(--body)', transition: 'border-color 0.2s',
+                }} />
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+            <button onClick={() => setHelpMode(false)}
+              style={{ padding: '12px 20px', borderRadius: 10, border: '2px solid var(--border)',
+                background: 'white', fontSize: 14, cursor: 'pointer', fontFamily: 'var(--body)' }}>Cancel</button>
+            <button onClick={handleHelpGenerate} disabled={helpStep < 2 || generating}
+              style={{
+                flex: 1, padding: '12px 20px', borderRadius: 10, border: 'none',
+                background: helpStep >= 2 ? 'var(--ink)' : 'var(--border)',
+                color: 'white', fontSize: 14, fontWeight: 500, cursor: helpStep >= 2 ? 'pointer' : 'default',
+                fontFamily: 'var(--body)', transition: 'background 0.3s',
+              }}>
+              {generating ? 'Writing...' : '✦ Generate Answer'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 32, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+        <button onClick={goPrev} disabled={qIndex === 0}
+          style={{ background: 'none', border: 'none', color: qIndex > 0 ? 'var(--ink)' : 'var(--border)',
+            fontSize: 14, cursor: qIndex > 0 ? 'pointer' : 'default', fontFamily: 'var(--body)', fontWeight: 500 }}>
+          ← Previous
+        </button>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{answered} of {totalQ} answered</span>
+        <button onClick={goNext}
+          style={{ background: 'none', border: 'none', color: 'var(--ink)',
+            fontSize: 14, cursor: 'pointer', fontFamily: 'var(--body)', fontWeight: 500 }}>
+          {qIndex < totalQ - 1 ? 'Skip →' : 'Review All →'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Screen 5: Filling ───
+function FillingStep({ grant, fields, fillEvents }) {
+  const filledCount = fillEvents.filter(e => e.type === 'fill_field' && e.status === 'done').length;
+  const currentlyFilling = fillEvents.findLast?.(e => e.type === 'fill_field' && e.status === 'typing');
+  const fieldLabels = fields.filter(f => f.value && f.status !== 'skip').map(f => f.label);
+
+  return (
+    <div style={{ animation: 'fadeIn 0.5s ease' }}>
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 6 }}>
+          {grant.name}
+        </div>
+        <h2 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 28, fontWeight: 300, margin: 0 }}>
+          Filling the form...
+        </h2>
+        <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 6, fontWeight: 300 }}>
+          Watch the browser — the agent is filling each field in real time
+        </p>
+      </div>
+
+      <div style={{
+        padding: 20, background: 'var(--ink)', borderRadius: 12, marginBottom: 20, position: 'relative', overflow: 'hidden',
+      }}>
+        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontFamily: 'monospace', marginBottom: 12 }}>
+          ● ● ● &nbsp; {grant.portal || 'SmartyGrants'} — {grant.name}
+        </div>
+        <div style={{ display: 'grid', gap: 6 }}>
+          {fieldLabels.map((label, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+              borderRadius: 4, fontSize: 13, fontFamily: 'monospace',
+              background: filledCount > i ? 'rgba(108,162,100,0.15)' : (currentlyFilling && currentlyFilling.fieldIndex === i) ? 'rgba(176,141,91,0.15)' : 'rgba(255,255,255,0.03)',
+              color: filledCount > i ? 'var(--green)' : (currentlyFilling && currentlyFilling.fieldIndex === i) ? 'var(--accent)' : 'rgba(255,255,255,0.15)',
+              transition: 'all 0.3s',
+            }}>
+              <span style={{ width: 16, textAlign: 'center' }}>
+                {filledCount > i ? '✓' : (currentlyFilling && currentlyFilling.fieldIndex === i) ? '▸' : '·'}
+              </span>
+              {label}
+              {currentlyFilling && currentlyFilling.fieldIndex === i && (
+                <span style={{ marginLeft: 'auto', animation: 'pulse 0.8s infinite', fontSize: 11 }}>typing...</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ background: 'var(--surface)', borderRadius: 8, padding: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: '100%', height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+          <div style={{
+            width: `${fieldLabels.length ? (filledCount / fieldLabels.length) * 100 : 0}%`, height: '100%',
+            background: 'var(--green)', borderRadius: 3, transition: 'width 0.5s ease',
+          }} />
+        </div>
+        <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+          {filledCount}/{fieldLabels.length}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Screen 6: Complete ───
+function CompleteStep({ grant, fields, onReset }) {
+  const filledFields = fields.filter(f => f.value && f.status !== 'skip');
+  const autoFilled = filledFields.filter(f => f.preFillStrategy === 'profile_lookup' || f.preFillStrategy === 'profile_match').length;
+  const aiGenerated = filledFields.filter(f => ['generate', 'template', 'needs_input'].includes(f.preFillStrategy) && f.value).length;
+  const filesUploaded = filledFields.filter(f => f.type === 'file').length;
+
+  return (
+    <div style={{ animation: 'fadeIn 0.5s ease', textAlign: 'center', padding: '40px 0' }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
+      <h2 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 32, fontWeight: 300, margin: '0 0 8px' }}>
+        Form filled successfully
+      </h2>
+      <p className="mw-stats-text" style={{ color: 'var(--muted)', fontSize: 15, fontWeight: 300, maxWidth: 460, margin: '0 auto 32px', lineHeight: 1.7 }}>
+        All {filledFields.length} fields have been filled in the {grant.portal || 'portal'}.
+        The application has been saved as a draft. Review it in the portal and submit when you're ready.
+      </p>
+
+      <div style={{
+        padding: 20, background: 'rgba(108,162,100,0.06)', borderRadius: 12,
+        border: '1px solid rgba(108,162,100,0.15)', maxWidth: 400, margin: '0 auto 24px', textAlign: 'left',
+      }} className="mw-stats-box">
+        <div style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--charcoal)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Fields filled</span><strong>{filledFields.length} / {fields.length}</strong></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Auto-filled from profile</span><strong>{autoFilled}</strong></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>AI-generated</span><strong>{aiGenerated}</strong></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span>Files uploaded</span><strong>{filesUploaded}</strong></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: 8, marginTop: 8 }}>
+            <span>Time saved (est.)</span><strong style={{ color: 'var(--green)' }}>~2.5 hours</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="mw-complete-buttons" style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+        <button style={{
+          padding: '12px 24px', borderRadius: 8, border: 'none', background: 'var(--ink)',
+          color: 'white', fontSize: 14, fontWeight: 500, cursor: 'pointer', fontFamily: 'var(--body)',
+        }}>
+          Open in {grant.portal || 'Portal'} to Review & Submit
+        </button>
+        <button onClick={onReset} style={{
+          padding: '12px 24px', borderRadius: 8, border: '1px solid var(--border)', background: 'white',
+          color: 'var(--charcoal)', fontSize: 14, cursor: 'pointer', fontFamily: 'var(--body)',
+        }}>
+          Fill Another Grant
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Profile Page (editable) ───
+function ProfilePage({ onBack }) {
+  const [profile, setProfile] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [editingField, setEditingField] = useState(null);
+  const [editValue, setEditValue] = useState('');
+
+  useEffect(() => {
+    fetch('/api/profile').then(r => r.json()).then(setProfile).catch(() => {});
+  }, []);
+
+  if (!profile) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>Loading profile...</div>;
+
+  const saveField = async (path, value) => {
+    setSaving(true);
+    // Build nested update object from dot path like "personal.name"
+    const parts = path.split('.');
+    const update = {};
+    let cur = update;
+    for (let i = 0; i < parts.length - 1; i++) {
+      cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+
+    const res = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    });
+    const updated = await res.json();
+    setProfile(updated);
+    setEditingField(null);
+    setEditValue('');
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const startEdit = (path, currentValue) => {
+    setEditingField(path);
+    setEditValue(currentValue || '');
+  };
+
+  const cancelEdit = () => {
+    setEditingField(null);
+    setEditValue('');
+  };
+
+  const inputStyle = {
+    width: '100%', padding: '10px 12px', borderRadius: 8, border: '2px solid var(--accent)',
+    fontSize: 14, fontFamily: 'var(--body)', outline: 'none', color: 'var(--ink)',
+  };
+
+  const EditableRow = ({ label, value, path }) => {
+    const isEditing = editingField === path;
+    const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value || '');
+    const isEmpty = !value || value === '[TO BE ADDED]';
+
+    return (
+      <div style={{ marginBottom: 10, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isEditing ? 8 : 0 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)' }}>{label}</span>
+          {!isEditing && (
+            <button onClick={() => startEdit(path, isEmpty ? '' : displayValue)}
+              style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)', fontWeight: 500 }}>
+              {isEmpty ? '+ Add' : 'Edit'}
+            </button>
+          )}
+        </div>
+        {isEditing ? (
+          <div>
+            <input value={editValue} onChange={e => setEditValue(e.target.value)} autoFocus
+              onKeyDown={e => { if (e.key === 'Enter') saveField(path, editValue); if (e.key === 'Escape') cancelEdit(); }}
+              style={inputStyle} />
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <button onClick={() => saveField(path, editValue)} disabled={saving}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--ink)', color: 'white', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)', fontWeight: 500 }}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+              <button onClick={cancelEdit}
+                style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'white', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 14, color: isEmpty ? 'var(--muted)' : 'var(--ink)', fontStyle: isEmpty ? 'italic' : 'normal', lineHeight: 1.5 }}>
+            {isEmpty ? 'Not set' : displayValue}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const EditableTextarea = ({ label, value, path }) => {
+    const isEditing = editingField === path;
+    const displayValue = String(value || '');
+    const isEmpty = !value;
+
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)' }}>{label}</span>
+          {!isEditing && (
+            <button onClick={() => startEdit(path, displayValue)}
+              style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)', fontWeight: 500 }}>
+              {isEmpty ? '+ Add' : 'Edit'}
+            </button>
+          )}
+        </div>
+        {isEditing ? (
+          <div>
+            <textarea value={editValue} onChange={e => setEditValue(e.target.value)} autoFocus
+              style={{ ...inputStyle, minHeight: 120, resize: 'vertical', lineHeight: 1.6 }} />
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <button onClick={() => saveField(path, editValue)} disabled={saving}
+                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: 'var(--ink)', color: 'white', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)', fontWeight: 500 }}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+              <button onClick={cancelEdit}
+                style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)', background: 'white', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: isEmpty ? 'var(--muted)' : 'var(--ink)', fontStyle: isEmpty ? 'italic' : 'normal', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+            {isEmpty ? 'Not set' : displayValue}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const Section = ({ title, children }) => (
+    <div style={{ marginBottom: 28, padding: '20px 22px', background: 'white', borderRadius: 12, border: '1px solid var(--border)' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 14 }}>{title}</div>
+      {children}
+    </div>
+  );
+
+  const p = profile;
+
+  return (
+    <div style={{ animation: 'fadeIn 0.5s ease' }}>
+      {/* Back button */}
+      <button onClick={onBack} style={{
+        background: 'none', border: 'none', color: 'var(--muted)', fontSize: 14,
+        cursor: 'pointer', fontFamily: 'var(--body)', padding: '0 0 20px', display: 'flex',
+        alignItems: 'center', gap: 6, fontWeight: 500,
+      }}
+      onMouseEnter={e => e.currentTarget.style.color = 'var(--ink)'}
+      onMouseLeave={e => e.currentTarget.style.color = 'var(--muted)'}>
+        ← Back to grants
+      </button>
+
+      <div style={{ marginBottom: 28 }}>
+        <h1 className="mw-heading" style={{ fontFamily: 'var(--display)', fontSize: 32, fontWeight: 300, margin: '0 0 6px' }}>
+          Your Profile
+        </h1>
+        <p style={{ color: 'var(--muted)', fontSize: 14, fontWeight: 300, margin: 0 }}>
+          This data is used to auto-fill grant applications. Click any field to edit it.
+        </p>
+        {saved && (
+          <div style={{ marginTop: 8, fontSize: 13, color: 'var(--green)', fontWeight: 500, animation: 'fadeIn 0.2s ease' }}>
+            Saved
+          </div>
+        )}
+      </div>
+
+      <Section title="Personal Details">
+        <EditableRow label="Name" value={p.personal?.name} path="personal.name" />
+        <EditableRow label="Email" value={p.personal?.email} path="personal.email" />
+        <EditableRow label="Phone" value={p.personal?.phone} path="personal.phone" />
+        <EditableRow label="Address" value={p.personal?.address} path="personal.address" />
+        <EditableRow label="Postcode" value={p.personal?.postcode} path="personal.postcode" />
+        <EditableRow label="ABN" value={p.personal?.abn} path="personal.abn" />
+        <EditableRow label="APRA Number" value={p.personal?.apraNumber} path="personal.apraNumber" />
+      </Section>
+
+      <Section title="Artist">
+        <EditableRow label="Genre" value={p.artist?.genre} path="artist.genre" />
+        <EditableRow label="Instruments" value={p.artist?.instruments} path="artist.instruments" />
+        <EditableRow label="Label" value={p.artist?.label} path="artist.label" />
+        <EditableRow label="Publisher" value={p.artist?.publisher} path="artist.publisher" />
+        <EditableRow label="Management" value={p.artist?.management} path="artist.management" />
+        <EditableRow label="Website" value={p.artist?.website} path="artist.website" />
+        <EditableRow label="Instagram" value={p.artist?.instagram} path="artist.instagram" />
+        <EditableRow label="Career Start" value={p.artist?.careerStart} path="artist.careerStart" />
+      </Section>
+
+      <Section title="Biography">
+        <EditableTextarea label="Short Bio" value={p.content?.biography?.short} path="content.biography.short" />
+        <EditableTextarea label="Full Bio" value={p.content?.biography?.long} path="content.biography.long" />
+      </Section>
+
+      <Section title="Written Content">
+        <EditableTextarea label="Artistic Statement" value={p.content?.artisticStatement} path="content.artisticStatement" />
+        <EditableTextarea label="Career Summary" value={p.content?.careerSummary} path="content.careerSummary" />
+        <EditableTextarea label="International Track Record" value={p.content?.internationalTrackRecord} path="content.internationalTrackRecord" />
+        <EditableTextarea label="NSW Residency Statement" value={p.content?.nswResidency} path="content.nswResidency" />
+      </Section>
+
+      <Section title="Stats">
+        <EditableRow label="Spotify Streams" value={p.stats?.spotifyStreams} path="stats.spotifyStreams" />
+        <EditableRow label="Units Sold" value={p.stats?.unitsSold} path="stats.unitsSold" />
+        <EditableRow label="Releases" value={p.stats?.releases} path="stats.releases" />
+        <EditableRow label="Years Active" value={p.stats?.yearsActive} path="stats.yearsActive" />
+        <EditableRow label="Continents Toured" value={p.stats?.continentsToured} path="stats.continentsToured" />
+        <EditableRow label="Chart Position" value={p.stats?.chartPosition} path="stats.chartPosition" />
+        <EditableRow label="Instagram Followers" value={p.stats?.instagramFollowers} path="stats.instagramFollowers" />
+      </Section>
+
+      <Section title="Portal Logins">
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
+          Saved credentials for auto-connecting to grant portals. Stored locally on your machine.
+        </p>
+        {p.portalLogins && Object.keys(p.portalLogins).length > 0 ? (
+          Object.entries(p.portalLogins).map(([key, login]) => (
+            <div key={key} style={{ marginBottom: 16, padding: '14px 16px', background: 'var(--surface)', borderRadius: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', marginBottom: 10 }}>
+                {login.label || key}
+              </div>
+              <EditableRow label="Email / Username" value={login.email} path={`portalLogins.${key}.email`} />
+              <EditableRow label="Password" value={login.password} path={`portalLogins.${key}.password`} />
+            </div>
+          ))
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--muted)', fontStyle: 'italic' }}>No portal logins saved yet</div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+// ─── Wizard Overlay (full-screen) ───
+const WIZARD_STEPS = ['scanning', 'review', 'filling', 'complete'];
+const WIZARD_LABELS = { scanning: 'Scanning', review: 'Review', filling: 'Filling', complete: 'Done' };
+
+function WizardOverlay({ grant, onClose }) {
+  const [wizardStep, setWizardStep] = useState('scanning');
+  const [fields, setFields] = useState([]);
+  const [scanEvents, setScanEvents] = useState([]);
+  const [fillEvents, setFillEvents] = useState([]);
+  const [confirmClose, setConfirmClose] = useState(false);
+
+  // Start scanning on mount — credentials already passed via grant.__credentials
+  useEffect(() => {
+    const creds = grant.__credentials;
+    if (!creds) return;
+
+    apiSSE('/wizard/scan', { credentials: creds }, (event) => {
+      setScanEvents(prev => [...prev, event]);
+
+      if (event.type === 'done' && event.fields) {
+        setFields(event.fields);
+        setTimeout(() => setWizardStep('review'), 800);
+      }
+      if (event.type === 'error') {
+        console.error('Scan error:', event.message);
+        setTimeout(() => setWizardStep('review'), 1000);
+      }
+    }).catch(err => console.error('SSE connection error:', err));
+  }, []);
+
+  const handleUpdateField = async (fieldId, value) => {
+    const result = await api(`/wizard/field/${fieldId}`, { method: 'PUT', body: { value } });
+    setFields(prev => prev.map(f => f.id === fieldId ? { ...f, ...result } : f));
+  };
+
+  const handleGenerateField = async (fieldId) => {
+    const result = await api(`/wizard/field/${fieldId}/generate`, { method: 'POST' });
+    if (result && !result.error) {
+      setFields(prev => prev.map(f => f.id === fieldId ? { ...f, ...result } : f));
+    }
+  };
+
+  const handleHelpGenerate = async (fieldId, helpAnswers) => {
+    const result = await api(`/wizard/field/${fieldId}/help`, { method: 'POST', body: { helpAnswers } });
+    if (result && !result.error) {
+      setFields(prev => prev.map(f => f.id === fieldId ? { ...f, ...result } : f));
+    }
+  };
+
+  const handleFill = async () => {
+    setWizardStep('filling');
+    setFillEvents([]);
+    apiSSE('/wizard/fill', {}, (event) => {
+      setFillEvents(prev => [...prev, event]);
+      if (event.type === 'fill_complete') {
+        setTimeout(() => setWizardStep('complete'), 1000);
+      }
+    });
+  };
+
+  const handleClose = () => {
+    if (wizardStep === 'complete') { onClose(); return; }
+    if (confirmClose) { onClose(); return; }
+    setConfirmClose(true);
+    setTimeout(() => setConfirmClose(false), 3000);
+  };
+
+  const handleReset = async () => {
+    await api('/wizard/reset', { method: 'POST' });
+    onClose();
+  };
+
+  const stepIndex = WIZARD_STEPS.indexOf(wizardStep);
+  const progress = ((stepIndex + 1) / WIZARD_STEPS.length) * 100;
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 200,
+      background: 'var(--bg)', display: 'flex', flexDirection: 'column',
+      animation: 'fadeIn 0.3s ease',
+    }}>
+      {/* Overlay header */}
+      <div style={{
+        padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        borderBottom: '1px solid var(--border)', background: 'white', flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 16 }}>✦</span>
+          <span style={{ fontFamily: 'var(--display)', fontSize: 15, fontWeight: 400, color: 'var(--ink)' }}>
+            {grant.name}
+          </span>
+          <span style={{
+            fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase',
+            color: 'var(--muted)', background: 'var(--surface)', padding: '3px 8px', borderRadius: 4,
+          }}>
+            {WIZARD_LABELS[wizardStep]}
+          </span>
+        </div>
+        <button onClick={handleClose} style={{
+          background: 'none', border: '1px solid var(--border)', borderRadius: 8,
+          width: 36, height: 36, fontSize: 18, cursor: 'pointer', color: 'var(--muted)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--ink)'; e.currentTarget.style.color = 'var(--ink)'; }}
+        onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--muted)'; }}>
+          {confirmClose ? '?' : '×'}
+        </button>
+      </div>
+
+      {/* Confirm close banner */}
+      {confirmClose && (
+        <div style={{
+          padding: '10px 20px', background: 'var(--orange)', color: 'white', fontSize: 13,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
+        }}>
+          <span>Close the wizard? Progress will be lost.</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setConfirmClose(false)} style={{
+              background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white', padding: '4px 12px',
+              borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'var(--body)',
+            }}>Cancel</button>
+            <button onClick={onClose} style={{
+              background: 'white', border: 'none', color: 'var(--orange)', padding: '4px 12px',
+              borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--body)',
+            }}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Progress bar */}
+      <div style={{ height: 4, background: 'var(--border)', flexShrink: 0 }}>
+        <div style={{ height: '100%', background: 'var(--green)', width: `${progress}%`, transition: 'width 0.5s ease' }} />
+      </div>
+
+      {/* Scrollable content */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div className="mw-main" style={{ maxWidth: 700, margin: '0 auto', padding: '32px 20px' }}>
+          {wizardStep === 'scanning' && <ScanningStep grant={grant} scanEvents={scanEvents} />}
+          {wizardStep === 'review' && <ReviewStep grant={grant} fields={fields}
+            onUpdateField={handleUpdateField} onGenerateField={handleGenerateField}
+            onHelpGenerate={handleHelpGenerate} onFill={handleFill} />}
+          {wizardStep === 'filling' && <FillingStep grant={grant} fields={fields} fillEvents={fillEvents} />}
+          {wizardStep === 'complete' && <CompleteStep grant={grant} fields={fields} onReset={handleReset} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ───
+function GrantWizard() {
+  const [screen, setScreen] = useState('list');    // 'list', 'detail', or 'profile'
+  const [selectedGrant, setSelectedGrant] = useState(null);
+  const [showOverlay, setShowOverlay] = useState(false);
+
+  const handleSelectGrant = async (grant) => {
+    setSelectedGrant(grant);
+    await api('/wizard/select', { method: 'POST', body: { grant } });
+    setScreen('detail');
+  };
+
+  const handleStartApplication = (credentials) => {
+    // Attach credentials to grant so overlay can use them on mount
+    setSelectedGrant(prev => ({ ...prev, __credentials: credentials }));
+    setShowOverlay(true);
+  };
+
+  const handleCloseOverlay = async () => {
+    setShowOverlay(false);
+    // Reset wizard state so it's clean for next attempt
+    await api('/wizard/reset', { method: 'POST' }).catch(() => {});
+  };
+
+  const handleBackToList = () => {
+    setScreen('list');
+    setSelectedGrant(null);
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', fontFamily: 'var(--body)', color: 'var(--ink)' }}>
+      {/* Header */}
+      <div className="mw-header" style={{
+        padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        borderBottom: '1px solid var(--border)', background: 'white',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 18 }}>✦</span>
+          <span className="mw-header-title" style={{ fontFamily: 'var(--display)', fontSize: 17, fontWeight: 400 }}>Wilko's Grant Wizard</span>
+        </div>
+        {screen === 'list' && (
+          <button onClick={() => setScreen('profile')} style={{
+            display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: '1px solid var(--border)',
+            borderRadius: 20, padding: '6px 14px 6px 8px', cursor: 'pointer', fontFamily: 'var(--body)',
+            fontSize: 12, color: 'var(--ink)', transition: 'all 0.2s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+          onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}>
+            <div style={{ width: 24, height: 24, borderRadius: 12, background: 'var(--accent)', color: 'white',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600 }}>MW</div>
+            <span>Profile</span>
+          </button>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="mw-main" style={{ maxWidth: 700, margin: '0 auto', padding: '32px 20px' }}>
+        {screen === 'list' && <GrantSelect onSelect={handleSelectGrant} />}
+        {screen === 'profile' && <ProfilePage onBack={() => setScreen('list')} />}
+        {screen === 'detail' && selectedGrant && (
+          <GrantDetail grant={selectedGrant} onBack={handleBackToList} onStartApplication={handleStartApplication} />
+        )}
+      </div>
+
+      {/* Full-screen wizard overlay */}
+      {showOverlay && selectedGrant && (
+        <WizardOverlay grant={selectedGrant} onClose={handleCloseOverlay} />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<GrantWizard />);
+</script>
+</body>
+</html>

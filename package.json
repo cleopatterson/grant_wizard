@@ -1,0 +1,24 @@
+{
+  "name": "wilko-grant-agent",
+  "version": "1.0.0",
+  "description": "Grant research and application assistant for Mark Wilkinson",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@playwright/mcp": "^0.0.68",
+    "@playwright/test": "^1.58.2",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "playwright": "^1.52.0",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-react": "^7.28.5"
+  }
+}
